@@ -38,12 +38,11 @@ async function getAccessToken(): Promise<string> {
     form.set("grant_type", "client_credentials");
     if (scope) form.set("scope", scope);
     const r = await axios.post(tokenUrl, form, common);
-    if (r.status >= 200 && r.status < 300 && r.data?.access_token) {
-      return String(r.data.access_token);
-    }
-    throw new Error(`Token failed (client_credentials): ${r.status} ${r.statusText} ${JSON.stringify(r.data)}`);
+    if (r.status >= 200 && r.status < 300 && r.data?.access_token) return String(r.data.access_token);
+    throw new Error(`token(client_credentials) ${r.status} ${r.statusText} ${JSON.stringify(r.data)}`);
   }
 
+  // password grant
   const username = env("LMW_USERNAME");
   const password = env("LMW_PASSWORD");
   const form = new URLSearchParams();
@@ -53,10 +52,8 @@ async function getAccessToken(): Promise<string> {
   if (scope) form.set("scope", scope);
 
   const r = await axios.post(tokenUrl, form, common);
-  if (r.status >= 200 && r.status < 300 && r.data?.access_token) {
-    return String(r.data.access_token);
-  }
-  throw new Error(`Token failed (password): ${r.status} ${r.statusText} ${JSON.stringify(r.data)}`);
+  if (r.status >= 200 && r.status < 300 && r.data?.access_token) return String(r.data.access_token);
+  throw new Error(`token(password) ${r.status} ${r.statusText} ${JSON.stringify(r.data)}`);
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -69,8 +66,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ ok: false, error: "Method Not Allowed" });
   }
 
+  const debug: Record<string, any> = {};
   try {
     const bodyIn = (req.body ?? {}) as Record<string, any>;
+    debug.incomingKeys = Object.keys(bodyIn);
 
     const documentId =
       (typeof bodyIn.orderId === "string" && bodyIn.orderId.trim()) ||
@@ -87,8 +86,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       documentIdCanonical: documentId,
     };
 
+    // === Stage 1: token ===
+    debug.stage = "token";
     const token = await getAccessToken();
+    debug.gotToken = !!token;
 
+    // === Stage 2: ION POST ===
+    debug.stage = "ion";
     const ionUrl = env("LMW_ION_URL");
     const ionDocName = env("LMW_ION_DOCNAME", true) || "AnyDocument";
     const ionEncoding = env("LMW_ION_ENCODING", true) || "NONE";
@@ -119,8 +123,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         "X-Infor-ION-encoding": ionEncoding,
         "X-Infor-ION-fromLogicalId": ionFromLid,
       },
+      debug,
     });
   } catch (err: any) {
-    return res.status(500).json({ ok: false, error: err?.message || String(err) });
+    // include axios response details if present
+    const ax = err?.response;
+    debug.errorStage = debug.stage || "unknown";
+    return res.status(500).json({
+      ok: false,
+      error: err?.message || String(err),
+      axios: ax ? { status: ax.status, statusText: ax.statusText, data: ax.data } : null,
+      debug,
+    });
   }
 }
