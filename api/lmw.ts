@@ -9,8 +9,8 @@ function env(name: string, optional = false) {
 
 function setCors(res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS, GET");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS, GET, HEAD");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept");
 }
 
 async function getAccessToken(): Promise<string> {
@@ -41,9 +41,7 @@ async function getAccessToken(): Promise<string> {
     if (r.status >= 200 && r.status < 300 && r.data?.access_token) {
       return String(r.data.access_token);
     }
-    throw new Error(
-      `Token failed (client_credentials): ${r.status} ${r.statusText} ${JSON.stringify(r.data)}`
-    );
+    throw new Error(`Token failed (client_credentials): ${r.status} ${r.statusText} ${JSON.stringify(r.data)}`);
   }
 
   const username = env("LMW_USERNAME");
@@ -58,23 +56,22 @@ async function getAccessToken(): Promise<string> {
   if (r.status >= 200 && r.status < 300 && r.data?.access_token) {
     return String(r.data.access_token);
   }
-  throw new Error(
-    `Token failed (password): ${r.status} ${r.statusText} ${JSON.stringify(r.data)}`
-  );
+  throw new Error(`Token failed (password): ${r.status} ${r.statusText} ${JSON.stringify(r.data)}`);
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   setCors(res);
 
-  if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method === "GET")    return res.status(200).json({ ok: true, message: "LMW endpoint ready" });
+  if (req.method === "OPTIONS" || req.method === "HEAD") return res.status(204).end();
+  if (req.method === "GET") return res.status(200).json({ ok: true, message: "LMW endpoint ready" });
   if (req.method !== "POST") {
-    res.setHeader("Allow", "POST, OPTIONS, GET");
+    res.setHeader("Allow", "POST, OPTIONS, GET, HEAD");
     return res.status(405).json({ ok: false, error: "Method Not Allowed" });
   }
 
   try {
     const bodyIn = (req.body ?? {}) as Record<string, any>;
+
     const documentId =
       (typeof bodyIn.orderId === "string" && bodyIn.orderId.trim()) ||
       (typeof bodyIn.documentId === "string" && bodyIn.documentId.trim()) ||
