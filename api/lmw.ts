@@ -7,15 +7,14 @@ function env(name: string, optional = false) {
   return v as string;
 }
 
-function setCors(res: VercelResponse) {
+function cors(res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS, GET, HEAD");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept");
 }
 
 async function getAccessToken(): Promise<string> {
-  const preset = process.env.LMW_ACCESS_TOKEN;
-  if (preset) return preset;
+  if (process.env.LMW_ACCESS_TOKEN) return process.env.LMW_ACCESS_TOKEN as string;
 
   const tokenUrl = env("LMW_TOKEN_URL");
   const clientId = env("LMW_CLIENT_ID");
@@ -24,74 +23,79 @@ async function getAccessToken(): Promise<string> {
   const scope = process.env.LMW_SCOPE;
 
   const basic = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
-  const common = {
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Authorization: `Basic ${basic}`,
-    },
+  const cfg = {
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Authorization: `Basic ${basic}` },
     timeout: 20000,
     validateStatus: () => true,
   } as const;
+  const okToken = (r: any) => r?.status >= 200 && r?.status < 300 && r?.data?.access_token;
 
   if (grant === "client_credentials") {
-    const form = new URLSearchParams();
-    form.set("grant_type", "client_credentials");
-    if (scope) form.set("scope", scope);
-    const r = await axios.post(tokenUrl, form, common);
-    if (r.status >= 200 && r.status < 300 && r.data?.access_token) return String(r.data.access_token);
-    throw new Error(`token(client_credentials) ${r.status} ${r.statusText} ${JSON.stringify(r.data)}`);
+    const f1 = new URLSearchParams();
+    f1.set("grant_type", "client_credentials");
+    if (scope) f1.set("scope", scope);
+    const r1 = await axios.post(tokenUrl, f1, cfg);
+    if (okToken(r1)) return String(r1.data.access_token);
+
+    const f2 = new URLSearchParams(f1);
+    f2.set("client_id", clientId);
+    f2.set("client_secret", clientSecret);
+    const r2 = await axios.post(tokenUrl, f2, cfg);
+    if (okToken(r2)) return String(r2.data.access_token);
+
+    throw new Error(`token(client_credentials) ${r1.status} ${r1.statusText} ${JSON.stringify(r1.data)}; retry=${r2.status} ${r2.statusText} ${JSON.stringify(r2.data)}`);
   }
 
-  // password grant
   const username = env("LMW_USERNAME");
   const password = env("LMW_PASSWORD");
-  const form = new URLSearchParams();
-  form.set("grant_type", "password");
-  form.set("username", username);
-  form.set("password", password);
-  if (scope) form.set("scope", scope);
 
-  const r = await axios.post(tokenUrl, form, common);
-  if (r.status >= 200 && r.status < 300 && r.data?.access_token) return String(r.data.access_token);
-  throw new Error(`token(password) ${r.status} ${r.statusText} ${JSON.stringify(r.data)}`);
+  const f1 = new URLSearchParams();
+  f1.set("grant_type", "password");
+  f1.set("username", username);
+  f1.set("password", password);
+  if (scope) f1.set("scope", scope);
+  const r1 = await axios.post(tokenUrl, f1, cfg);
+  if (okToken(r1)) return String(r1.data.access_token);
+
+  const f2 = new URLSearchParams(f1);
+  f2.set("client_id", clientId);
+  f2.set("client_secret", clientSecret);
+  const r2 = await axios.post(tokenUrl, f2, cfg);
+  if (okToken(r2)) return String(r2.data.access_token);
+
+  throw new Error(`token(password) ${r1.status} ${r1.statusText} ${JSON.stringify(r1.data)}; retry=${r2.status} ${r2.statusText} ${JSON.stringify(r2.data)}`);
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  setCors(res);
-
+  cors(res);
   if (req.method === "OPTIONS" || req.method === "HEAD") return res.status(204).end();
   if (req.method === "GET") return res.status(200).json({ ok: true, message: "LMW endpoint ready" });
-  if (req.method !== "POST") {
-    res.setHeader("Allow", "POST, OPTIONS, GET, HEAD");
-    return res.status(405).json({ ok: false, error: "Method Not Allowed" });
-  }
+  if (req.method !== "POST") { res.setHeader("Allow", "POST, OPTIONS, GET, HEAD"); return res.status(405).json({ ok: false, error: "Method Not Allowed" }); }
 
   const debug: Record<string, any> = {};
   try {
-    const bodyIn = (req.body ?? {}) as Record<string, any>;
-    debug.incomingKeys = Object.keys(bodyIn);
+    const body = (req.body ?? {}) as Record<string, any>;
+    debug.incomingKeys = Object.keys(body);
 
     const documentId =
-      (typeof bodyIn.orderId === "string" && bodyIn.orderId.trim()) ||
-      (typeof bodyIn.documentId === "string" && bodyIn.documentId.trim()) ||
+      (typeof body.orderId === "string" && body.orderId.trim()) ||
+      (typeof body.documentId === "string" && body.documentId.trim()) ||
       `ofm-${Date.now()}`;
 
     const payload = {
       documentId,
-      test: bodyIn.test ?? "test",
-      desc: bodyIn.desc ?? `OFM submission${bodyIn.authority ? ` to ${bodyIn.authority}` : ""}`,
-      status: bodyIn.status ?? "test",
-      modified: bodyIn.modified ?? new Date().toISOString(),
-      ...bodyIn,
+      test: body.test ?? "test",
+      desc: body.desc ?? `OFM submission${body.authority ? ` to ${body.authority}` : ""}`,
+      status: body.status ?? "test",
+      modified: body.modified ?? new Date().toISOString(),
+      ...body,
       documentIdCanonical: documentId,
     };
 
-    // === Stage 1: token ===
     debug.stage = "token";
     const token = await getAccessToken();
-    debug.gotToken = !!token;
+    debug.gotToken = Boolean(token);
 
-    // === Stage 2: ION POST ===
     debug.stage = "ion";
     const ionUrl = env("LMW_ION_URL");
     const ionDocName = env("LMW_ION_DOCNAME", true) || "AnyDocument";
@@ -126,7 +130,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       debug,
     });
   } catch (err: any) {
-    // include axios response details if present
     const ax = err?.response;
     debug.errorStage = debug.stage || "unknown";
     return res.status(500).json({
